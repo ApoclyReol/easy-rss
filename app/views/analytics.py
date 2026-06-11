@@ -7,6 +7,20 @@ from app.repositories import count_items, list_feed_interest_stats
 from app.services.analytics_service import compute_interest_rate, format_interest_rate
 from app.services.settings_service import load_settings
 
+DISPLAY_COLUMNS = [
+    "期刊",
+    "启用",
+    "总条目",
+    "未读",
+    "隐藏",
+    "感兴趣",
+    "归档",
+    "过期",
+    "兴趣文献",
+    "感兴趣率",
+]
+SORT_ONLY_COLUMNS = ["_interest_rate_value"]
+
 
 def render_analytics_view() -> None:
     st.subheader("兴趣分析")
@@ -51,5 +65,6 @@ def render_analytics_view() -> None:
         )
 
     table_rows.sort(key=lambda row: row["_interest_rate_value"], reverse=True)
-    dataframe = pd.DataFrame(table_rows).drop(columns=["_interest_rate_value"])
+    dataframe = pd.DataFrame(table_rows, columns=DISPLAY_COLUMNS + SORT_ONLY_COLUMNS)
+    dataframe = dataframe.drop(columns=SORT_ONLY_COLUMNS, errors="ignore")
     st.dataframe(dataframe, hide_index=True, width="stretch")
