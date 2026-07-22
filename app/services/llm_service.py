@@ -4,16 +4,9 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.relevance import RelevanceItem, item_from_record, parse_relevance_response
+from app.relevance import parse_llm_review_response
+from app.repositories.recommendation_repository import list_keywords, list_pending_for_llm, save_llm_review
 from app.services.settings_service import LLMSettings
-
-
-@dataclass
-class LLMPreviewResult:
-    item_id: int
-    title: str
-    relevant: bool | None = None
-    error: str | None = None
 
 
 @dataclass
@@ -25,6 +18,14 @@ class APITestResult:
     raw_response_preview: str = ""
 
 
+@dataclass
+class LLMReviewRun:
+    total: int
+    high: int
+    low: int
+    failed: int
+
+
 def _normalize_base_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if normalized.endswith("/chat/completions"):
@@ -32,18 +33,6 @@ def _normalize_base_url(base_url: str) -> str:
     if normalized.endswith("/v1"):
         return f"{normalized}/chat/completions"
     return f"{normalized}/v1/chat/completions"
-
-
-def render_prompt(settings: LLMSettings, item: RelevanceItem) -> str:
-    return settings.prompt_template.format(
-        user_interest=settings.user_interest.strip(),
-        title=item.title.strip(),
-        authors=item.authors.strip(),
-        journal=item.journal.strip(),
-        summary=item.summary.strip(),
-        content=item.content.strip(),
-        url=item.url.strip(),
-    )
 
 
 def _post_chat_completion(settings: LLMSettings, prompt: str) -> tuple[str, dict]:
@@ -124,28 +113,56 @@ def test_llm_settings(settings: LLMSettings) -> APITestResult:
     )
 
 
-def run_llm_preview(items: list[dict], settings: LLMSettings) -> list[LLMPreviewResult]:
-    results: list[LLMPreviewResult] = []
+def _render_review_prompt(item: dict, interest_keywords: list[dict]) -> str:
+    positive = [row["keyword"] for row in interest_keywords if float(row.get("effective_weight") or 0) > 0][:20]
+    negative = [row["keyword"] for row in interest_keywords if float(row.get("effective_weight") or 0) < 0][:20]
+    matched = str(item.get("matched_keywords") or "[]")
+    return f"""You are reviewing a borderline academic-paper recommendation for one researcher.
+
+Return exactly one lowercase token:
+- high: the paper is sufficiently relevant to prioritize
+- low: the paper is sufficiently irrelevant to deprioritize
+
+Do not return JSON, reasons, or any other text.
+
+Research interest description:
+{item.get('user_interest', '')}
+
+Learned positive keywords:
+{', '.join(positive)}
+
+Learned negative keywords:
+{', '.join(negative)}
+
+Keyword model score:
+{item.get('keyword_score')}
+
+Matched keyword evidence:
+{matched}
+
+Title:
+{item.get('title') or ''}
+
+Abstract:
+{item.get('summary') or ''}
+"""
+
+
+def run_pending_llm_review(settings: LLMSettings) -> LLMReviewRun:
+    items = list_pending_for_llm()
+    keywords = list_keywords(limit=100)
+    high = low = failed = 0
     for item in items:
         try:
-            relevance_item = item_from_record(item)
-            prompt = render_prompt(settings, relevance_item)
-            content, _ = _post_chat_completion(settings, prompt)
-            relevant = parse_relevance_response(content)
-            results.append(
-                LLMPreviewResult(
-                    item_id=int(item["id"]),
-                    title=str(item.get("title") or ""),
-                    relevant=relevant,
-                )
-            )
+            item["user_interest"] = settings.user_interest
+            response, _ = _post_chat_completion(settings, _render_review_prompt(item, keywords))
+            tier = parse_llm_review_response(response)
+            save_llm_review(int(item["id"]), tier=tier, error=None)
+            if tier == "high":
+                high += 1
+            else:
+                low += 1
         except Exception as exc:
-            results.append(
-                LLMPreviewResult(
-                    item_id=int(item["id"]),
-                    title=str(item.get("title") or ""),
-                    error=str(exc),
-                )
-            )
-    return results
-
+            save_llm_review(int(item["id"]), tier=None, error=str(exc)[:500])
+            failed += 1
+    return LLMReviewRun(total=len(items), high=high, low=low, failed=failed)

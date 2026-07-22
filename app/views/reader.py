@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import html
+import json
 
 import streamlit as st
 
 from app import rss_core
 from app.repositories import (
+    batch_set_status,
     count_items,
     count_items_for_view,
     list_feeds,
@@ -13,6 +15,7 @@ from app.repositories import (
     set_item_status,
 )
 from app.ui.notices import push_notice
+from app.views.recommendation import render_recommendation_panel
 
 QUICK_REVIEW_CURSOR_KEY = "reader_quick_review_cursor"
 QUICK_REVIEW_SIGNATURE_KEY = "reader_quick_review_signature"
@@ -50,6 +53,9 @@ def _undo_last_action() -> bool:
     if action["kind"] == "single":
         set_item_status(int(action["item_id"]), action["from_status"])
         push_notice(f"已撤回《{action['title']}》的操作", "info")
+    elif action["kind"] == "batch":
+        batch_set_status(action["item_ids"], action["from_status"])
+        push_notice(f"已撤回批量操作，恢复 {action['count']} 条论文", "info")
     else:
         return False
 
@@ -60,6 +66,25 @@ def _undo_last_action() -> bool:
 
 def _last_action_label() -> str:
     return "撤回"
+
+
+def _recommendation_caption(item: dict) -> str:
+    labels = {"high": "高相关", "pending": "待判断", "low": "低相关"}
+    tier = item.get("final_tier")
+    if not tier:
+        return "未评分"
+    parts = [labels.get(tier, str(tier))]
+    if item.get("keyword_score") is not None:
+        parts.append(str(int(round(float(item["keyword_score"])))))
+    parts.append("LLM 复核" if item.get("llm_tier") else "关键词")
+    try:
+        matched = json.loads(item.get("matched_keywords") or "[]")
+    except (TypeError, ValueError):
+        matched = []
+    names = [str(row.get("keyword")) for row in matched[:3] if isinstance(row, dict) and row.get("keyword")]
+    if names:
+        parts.append("、".join(names))
+    return " · ".join(parts)
 
 
 def _render_title_link(title: str, link: str | None, *, prefix: str = "", level: str = "body") -> None:
@@ -94,6 +119,8 @@ def render_item_card(item: dict) -> None:
         _render_title_link(title, item.get("link"), prefix=prefix, level="body")
         if display_journal:
             st.caption(display_journal)
+        if item["item_status"] == "unread":
+            st.caption(_recommendation_caption(item))
         cols = st.columns([0.9, 0.9, 0.9, 6])
 
         primary_label = ""
@@ -249,6 +276,8 @@ def _render_quick_review_item(item: dict, current_index: int, total_count: int, 
         _render_title_link(title, item.get("link"), prefix=prefix, level="heading")
         if display_journal:
             st.caption(display_journal)
+        if item["item_status"] == "unread":
+            st.caption(_recommendation_caption(item))
 
         if display_summary:
             st.write(display_summary)
@@ -381,6 +410,10 @@ def render_reader_view() -> None:
         key=READER_LIMIT_KEY,
     )
 
+    selected_feed_ids = [feed_id] if feed_id else []
+    if status == "unread":
+        render_recommendation_panel(q=q, feed_ids=selected_feed_ids)
+
     action_cols = st.columns([0.9, 0.9, 6])
     if action_cols[0].button("刷新列表", width="content"):
         push_notice("列表已刷新", "info")
@@ -390,7 +423,6 @@ def render_reader_view() -> None:
         if _undo_last_action():
             st.rerun()
 
-    selected_feed_ids = [feed_id] if feed_id else []
     matched_count = count_items_for_view(status=status, q=q, feed_ids=selected_feed_ids)
     items = list_items(status=status, q=q, feed_ids=selected_feed_ids, limit=int(limit))
     signature = (status, feed_id, q.strip(), int(limit))

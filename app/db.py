@@ -62,6 +62,45 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_items_title_norm ON items(title_norm);
             CREATE INDEX IF NOT EXISTS idx_items_status ON items(item_status);
             CREATE INDEX IF NOT EXISTS idx_item_feeds_feed ON item_feeds(feed_id);
+
+            CREATE TABLE IF NOT EXISTS recommendation_scores (
+                item_id INTEGER PRIMARY KEY,
+                keyword_score REAL,
+                keyword_tier TEXT,
+                final_tier TEXT,
+                llm_tier TEXT,
+                llm_error TEXT,
+                matched_keywords TEXT NOT NULL DEFAULT '[]',
+                model_version TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                scored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                llm_reviewed_at TEXT,
+                FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS recommendation_keywords (
+                keyword TEXT PRIMARY KEY,
+                auto_weight REAL NOT NULL DEFAULT 0,
+                positive_count INTEGER NOT NULL DEFAULT 0,
+                negative_count INTEGER NOT NULL DEFAULT 0,
+                manual_direction TEXT,
+                manual_weight REAL,
+                is_disabled INTEGER NOT NULL DEFAULT 0,
+                model_version TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS recommendation_models (
+                model_version TEXT PRIMARY KEY,
+                positive_count INTEGER NOT NULL,
+                negative_count INTEGER NOT NULL,
+                unread_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                error_message TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_recommendation_scores_tier
+                ON recommendation_scores(final_tier);
             """
         )
         conn.commit()

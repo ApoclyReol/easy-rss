@@ -62,16 +62,39 @@ def list_items(
     if limit is not None:
         limit_sql = "LIMIT ?"
         params.append(limit)
+    recommendation_columns = """
+            s.keyword_score,
+            s.keyword_tier,
+            s.final_tier,
+            s.llm_tier,
+            s.llm_error,
+            s.matched_keywords,
+            s.model_version AS recommendation_model_version,
+    """
+    order_sql = "i.last_seen_at DESC, i.id DESC"
+    if status == "unread":
+        order_sql = """
+            CASE s.final_tier
+                WHEN 'high' THEN 1
+                WHEN 'pending' THEN 2
+                WHEN 'low' THEN 4
+                ELSE 3
+            END ASC,
+            i.last_seen_at DESC,
+            i.id DESC
+        """
     sql = f"""
         SELECT
             i.*,
+            {recommendation_columns}
             GROUP_CONCAT(f.name, ' / ') AS feed_names
         FROM items i
+        LEFT JOIN recommendation_scores s ON s.item_id = i.id
         LEFT JOIN item_feeds ifs ON ifs.item_id = i.id
         LEFT JOIN feeds f ON f.id = ifs.feed_id
         WHERE {' AND '.join(where)}
         GROUP BY i.id
-        ORDER BY i.last_seen_at DESC, i.id DESC
+        ORDER BY {order_sql}
         {limit_sql}
     """
     with get_conn() as conn:
@@ -161,34 +184,6 @@ def batch_set_status(item_ids: Iterable[int], status: str) -> int:
         cur = conn.execute(
             f"UPDATE items SET item_status=? WHERE id IN ({placeholders})",
             params,
-        )
-        conn.commit()
-        return cur.rowcount
-
-
-def set_status_for_filter(
-    status: str,
-    q: str = "",
-    feed_ids: Iterable[int] | None = None,
-    target_status: str = "hidden",
-) -> int:
-    if target_status not in ITEM_STATUSES:
-        raise ValueError(f"Unsupported target status: {target_status}")
-    where, params = _build_item_where(
-        status=status,
-        q=q,
-        feed_ids=feed_ids,
-    )
-    normalized_where = [clause.replace("i.", "") for clause in where]
-    sql = f"""
-        UPDATE items
-        SET item_status=?
-        WHERE {' AND '.join(normalized_where)}
-    """
-    with get_conn() as conn:
-        cur = conn.execute(
-            sql,
-            [target_status, *params],
         )
         conn.commit()
         return cur.rowcount

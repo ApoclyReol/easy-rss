@@ -24,9 +24,14 @@
 职责分层：
 
 - `app/views/`：页面视图
-- `app/services/`：业务逻辑、RSS 更新、筛选、自动更新、统计辅助
+- `app/services/`：业务逻辑、RSS 更新、个性化推荐、自动更新、统计辅助
 - `app/repositories/`：SQLite 查询与聚合
 - `app/ui/`：通知等界面辅助
+
+提交和版本规则见：
+
+- `docs/COMMIT_CONVENTION.md`
+- 根目录 `CONTRIBUTING.md`
 
 保持原则：
 
@@ -36,7 +41,7 @@
 
 ## 3. 数据库形态
 
-当前是轻量三表结构：
+核心文献数据是三表结构，并增加三张推荐持久化表：
 
 ### `feeds`
 
@@ -78,6 +83,12 @@
 - `feed_id`
 - `first_seen_at`
 - `last_seen_at`
+
+### 推荐表
+
+- `recommendation_scores`：未读论文的关键词分、最终层级、LLM 复核和模型版本
+- `recommendation_keywords`：自动词权重、样本频次及人工修正
+- `recommendation_models`：每次主动重建的版本、样本数和错误信息
 
 ### 期刊名称统一口径
 
@@ -137,9 +148,10 @@
 
 列表默认排序：
 
-- 全部篮子统一按 `last_seen_at DESC, id DESC`
+- 未读篮子按 `高相关 -> 待判断 -> 未评分 -> 低相关`，同层按最新优先
+- 其他篮子按 `last_seen_at DESC, id DESC`
 
-阅读页的职责是 **单条分拣**，不是批量运维页。
+阅读页同时承担单条分拣和未读推荐；批量操作仅限确认后隐藏当前筛选范围的低相关论文。
 
 当前阅读页保留：
 
@@ -148,8 +160,11 @@
 - 显示数量
 - 列表浏览 / 快速处理
 - 最近一步撤回
+- 主动更新关键词推荐
+- 主动 LLM 复核待判断论文
+- 查看并修正关键词词表
 
-不要再把“当前筛选全部隐藏”这类批量运维按钮塞回阅读页。
+不要增加无推荐依据的“当前筛选全部隐藏”。
 
 ## 6. 更新与自动整理
 
@@ -191,21 +206,25 @@
 
 不要把这类修复逻辑重新塞回普通页面 rerun 热路径。
 
-## 7. 筛选逻辑
+## 7. 个性化推荐
 
-### 布尔筛选
+### 关键词推荐
 
-- 只作用于 `unread`
-- 支持多选订阅源
-- 支持预览命中 / 未命中
-- 批量隐藏未命中结果
-- 只保存一条默认规则
+- 训练标签：`interested / archived` 为正，`hidden / expired` 为负
+- 未读不参与训练，只接受评分
+- 标题重复输入以提高权重，摘要作为补充；不使用作者和期刊作为特征
+- 英文和中文统一分词，TF-IDF 使用一元和二元词组
+- 类别平衡逻辑回归输出 `0–100`，阈值为高相关 `>=70`、低相关 `<=30`
+- 评分以无关键词证据时的 `50` 为中性点，只由实际命中的正负关键词向两端推动，避免负样本总量形成错误低分
+- 每次点击“更新关键词推荐”完整重建，旧 LLM 结果随之失效
+- 空文本或训练失败保持未评分，不得自动归为低相关
 
-### LLM 筛选
+### LLM 复核
 
-- 只作用于 `unread`
-- 当前定位是实验功能
-- 不推荐作为主流程
+- 只处理关键词层级为 `pending` 且尚未成功复核的未读论文
+- 输出契约严格为 `high / low`
+- 单篇失败保留在待判断层，再次点击只重试失败项
+- 推荐和 LLM 均不得由启动或 RSS 更新自动触发
 
 ## 8. 兴趣分析
 
@@ -264,7 +283,6 @@ CNKI 链接不能像普通 RSS 链接那样直接去掉 query 参数。
 内容包括：
 
 - LLM 配置
-- 布尔默认规则
 - 自动更新摘要
 - 过期天数
 
@@ -273,6 +291,8 @@ CNKI 链接不能像普通 RSS 链接那样直接去掉 query 参数。
 - 只保存在本地
 - 不应提交 API key
 - `.gitignore` 已忽略该文件
+
+推荐数据文件也全部位于 `data/`，包括 SQLite 主文件及 `-wal`、`-shm`、`-journal` sidecar；这些文件不应进入 Git。
 
 ## 11. 验证方式
 
@@ -285,7 +305,7 @@ env PYTHONPYCACHEPREFIX=/private/tmp/rss_reader_pycache python3 -m py_compile ap
 推荐测试：
 
 ```bash
-.venv/bin/python -m unittest tests.test_relevance tests.test_boolean_filtering tests.test_analytics tests.test_rss_core
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
 如果涉及依赖 `bs4`、`streamlit` 等项目环境，请优先使用 `.venv/bin/python`。
